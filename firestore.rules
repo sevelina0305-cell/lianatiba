@@ -1,0 +1,163 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+
+    function isSuperAdmin() {
+      return hasRole('SUPER_ADMIN');
+    }
+
+    function isSchoolAdmin(schoolId) {
+      return isSuperAdmin() || (hasRole('SCHOOL_ADMIN') && getUserData().schoolId == schoolId);
+    }
+
+    function isAcademicMaster(schoolId) {
+      return isSchoolAdmin(schoolId) || (hasRole('ACADEMIC_MASTER') && getUserData().schoolId == schoolId);
+    }
+
+    function isHeadTeacher(schoolId) {
+      return isSchoolAdmin(schoolId) || (hasRole('HEAD_TEACHER') && getUserData().schoolId == schoolId);
+    }
+
+    function isStaffMember(schoolId) {
+      return isAuthenticated() && getUserData().schoolId == schoolId && (
+        getUserData().role in ['SUPER_ADMIN', 'SCHOOL_ADMIN', 'HEAD_TEACHER', 'DEPUTY_HEAD', 'ACADEMIC_MASTER', 'HEAD_OF_DEPARTMENT', 'CLASS_TEACHER', 'SUBJECT_TEACHER']
+      );
+    }
+
+    // 1. Schools Collection
+    match /schools/{schoolId} {
+      allow read: if isAuthenticated();
+      allow write: if isSchoolAdmin(schoolId);
+    }
+
+    // 2. Users & UserRoles
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isStaffMember(resource.data.schoolId));
+      allow write: if isSchoolAdmin(request.resource.data.schoolId);
+    }
+
+    // 3. Students
+    match /students/{studentId} {
+      allow read: if isAuthenticated() && (
+        isStaffMember(resource.data.schoolId) ||
+        (getUserData().role == 'PARENT' && studentId in getUserData().linkedStudentIds) ||
+        (getUserData().role == 'STUDENT' && getUserData().studentId == studentId)
+      );
+      allow create, update: if isSchoolAdmin(request.resource.data.schoolId);
+      allow delete: if false; // Soft-delete / archival required by PDP Act 2022
+    }
+
+    // 4. Student Combination History
+    match /studentCombinationHistory/{historyId} {
+      allow read: if isAuthenticated() && isStaffMember(resource.data.schoolId);
+      allow create: if isAuthenticated() && isAcademicMaster(request.resource.data.schoolId);
+      allow update, delete: if false; // Immutable audit trail
+    }
+
+    // 5. Classes & Streams
+    match /classes/{classId} {
+      allow read: if isAuthenticated();
+      allow write: if isSchoolAdmin(request.resource.data.schoolId);
+    }
+
+    // 6. Subjects & Combinations
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated();
+      allow write: if isAcademicMaster(request.resource.data.schoolId);
+    }
+    match /subjectCombinations/{combId} {
+      allow read: if isAuthenticated();
+      allow write: if isAcademicMaster(request.resource.data.schoolId);
+    }
+
+    // 7. Student Attendance
+    match /studentAttendance/{attendanceId} {
+      allow read: if isAuthenticated() && (
+        isStaffMember(resource.data.schoolId) ||
+        (getUserData().role == 'PARENT' && resource.data.studentId in getUserData().linkedStudentIds) ||
+        (getUserData().role == 'STUDENT' && resource.data.studentId == getUserData().studentId)
+      );
+      allow write: if isAuthenticated() && (
+        isStaffMember(request.resource.data.schoolId)
+      );
+    }
+
+    // 8. Staff Attendance
+    match /staffAttendance/{attendanceId} {
+      allow read, write: if isAuthenticated() && (
+        isHeadTeacher(request.resource.data.schoolId) || isSchoolAdmin(request.resource.data.schoolId)
+      );
+    }
+
+    // 9. Examinations
+    match /examinations/{examId} {
+      allow read: if isAuthenticated();
+      allow write: if isAcademicMaster(request.resource.data.schoolId);
+    }
+
+    // 10. Marks - Critical Access Control (Section 16)
+    // Parents & students CANNOT read draft, submitted, or unapproved marks.
+    // Only published marks are visible to parents and students.
+    match /marks/{markId} {
+      allow read: if isAuthenticated() && (
+        isStaffMember(resource.data.schoolId) ||
+        (
+          resource.data.status == 'PUBLISHED' && (
+            (getUserData().role == 'PARENT' && resource.data.studentId in getUserData().linkedStudentIds) ||
+            (getUserData().role == 'STUDENT' && resource.data.studentId == getUserData().studentId)
+          )
+        )
+      );
+      // Teachers can only create or update drafts or submit marks for their assigned classes/subjects
+      allow create, update: if isAuthenticated() && (
+        isAcademicMaster(request.resource.data.schoolId) ||
+        (getUserData().role == 'SUBJECT_TEACHER' && request.resource.data.teacherId == request.auth.uid)
+      );
+      allow delete: if false; // Permanent deletion blocked
+    }
+
+    // 11. Result Approvals & Publications
+    match /resultApprovals/{approvalId} {
+      allow read: if isAuthenticated() && isStaffMember(resource.data.schoolId);
+      allow write: if isAuthenticated() && isAcademicMaster(request.resource.data.schoolId);
+    }
+
+    // 12. Communication & Messaging
+    match /messages/{messageId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
+      allow update, delete: if isSchoolAdmin(resource.data.schoolId);
+    }
+
+    // 13. Announcements
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isStaffMember(request.resource.data.schoolId);
+    }
+
+    // 14. Audit Logs (Immutable)
+    match /auditLogs/{logId} {
+      allow read: if isAuthenticated() && isSchoolAdmin(resource.data.schoolId);
+      allow create: if isAuthenticated();
+      allow update, delete: if false; // Strict immutability
+    }
+
+    // 15. SMS Logs
+    match /smsLogs/{smsId} {
+      allow read, write: if isAuthenticated() && isSchoolAdmin(request.resource.data.schoolId);
+    }
+  }
+}

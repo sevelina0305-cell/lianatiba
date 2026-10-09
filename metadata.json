@@ -1,0 +1,7 @@
+{
+  "name": "ELIMU PRO — Smart School Management System",
+  "description": "Production-grade School Management System for Tanzanian secondary schools (O-Level & A-Level) featuring student records, attendance, Tanzania grading engine, exam approvals, parent-teacher comms, and SMS alerts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
